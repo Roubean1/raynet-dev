@@ -1,11 +1,16 @@
 import express from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import cors from 'cors';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import {
+  AuthUser,
   BusinessCase,
   BusinessCaseResponse,
   LeaderboardSortBy,
+  LoginRequest,
+  LoginResponse,
   SalespersonLeaderboardItem,
   SalespersonLeaderboardResponse
 } from './types';
@@ -17,6 +22,26 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
+const demoUser = {
+  email: 'manager@raynet.cz',
+  password: 'Raynet',
+  name: 'Raynet Manager',
+  role: 'manager' as const
+};
+
+const loginRateLimit = {
+  maxFailedAttempts: 5,
+  windowMs: 2 * 60 * 1000
+};
+
+const sessionDurationMs = 60 * 60 * 1000;
+const failedLoginAttempts = new Map<string, number[]>();
+const sessions = new Map<string, { user: AuthUser; expiresAt: number }>();
+
+interface AuthenticatedRequest extends Request {
+  user?: AuthUser;
+}
+
 const leaderboardSortFields: LeaderboardSortBy[] = [
   'wonRevenue',
   'totalRevenue',
@@ -27,6 +52,130 @@ const leaderboardSortFields: LeaderboardSortBy[] = [
   'wonCasesCount',
   'winRate'
 ];
+
+function logInfo(event: string, details: Record<string, unknown> = {}): void {
+  console.info(
+    JSON.stringify({
+      level: 'info',
+      event,
+      timestamp: new Date().toISOString(),
+      ...details
+    })
+  );
+}
+
+function logWarning(event: string, details: Record<string, unknown> = {}): void {
+  console.warn(
+    JSON.stringify({
+      level: 'warn',
+      event,
+      timestamp: new Date().toISOString(),
+      ...details
+    })
+  );
+}
+
+function logError(event: string, error: unknown, details: Record<string, unknown> = {}): void {
+  const normalizedError =
+    error instanceof Error
+      ? {
+          name: error.name,
+          message: error.message,
+          stack: error.stack
+        }
+      : { message: 'Unknown error' };
+
+  console.error(
+    JSON.stringify({
+      level: 'error',
+      event,
+      timestamp: new Date().toISOString(),
+      error: normalizedError,
+      ...details
+    })
+  );
+}
+
+function getClientIp(req: Request): string {
+  const forwardedFor = req.headers['x-forwarded-for'];
+
+  if (typeof forwardedFor === 'string') {
+    return forwardedFor.split(',')[0]?.trim() || req.ip || 'unknown';
+  }
+
+  return req.ip || 'unknown';
+}
+
+function getLoginIdentifier(req: Request, username: string): string {
+  return `${getClientIp(req)}:${username.toLowerCase()}`;
+}
+
+function pruneOldFailedAttempts(attempts: number[], now: number): number[] {
+  return attempts.filter((attemptAt) => now - attemptAt < loginRateLimit.windowMs);
+}
+
+function isRateLimited(identifier: string, now: number): boolean {
+  const attempts = pruneOldFailedAttempts(failedLoginAttempts.get(identifier) ?? [], now);
+  failedLoginAttempts.set(identifier, attempts);
+
+  return attempts.length >= loginRateLimit.maxFailedAttempts;
+}
+
+function recordFailedLogin(identifier: string, now: number): number {
+  const attempts = pruneOldFailedAttempts(failedLoginAttempts.get(identifier) ?? [], now);
+  attempts.push(now);
+  failedLoginAttempts.set(identifier, attempts);
+
+  return attempts.length;
+}
+
+function clearFailedLogins(identifier: string): void {
+  failedLoginAttempts.delete(identifier);
+}
+
+function getBearerToken(req: Request): string | null {
+  const authorization = req.headers.authorization;
+
+  if (!authorization?.startsWith('Bearer ')) {
+    return null;
+  }
+
+  return authorization.slice('Bearer '.length).trim();
+}
+
+function authenticate(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
+  const token = getBearerToken(req);
+
+  if (!token) {
+    res.status(401).json({
+      message: 'Missing authorization token',
+      status: 'error'
+    });
+    return;
+  }
+
+  const session = sessions.get(token);
+
+  if (!session) {
+    res.status(401).json({
+      message: 'Invalid authorization token',
+      status: 'error'
+    });
+    return;
+  }
+
+  if (session.expiresAt <= Date.now()) {
+    sessions.delete(token);
+    res.status(401).json({
+      message: 'Authorization token expired',
+      status: 'error'
+    });
+    return;
+  }
+
+  req.user = session.user;
+  next();
+}
 
 function loadBusinessCases(): BusinessCase[] {
   const dataPath = path.join(process.cwd(), '../data/data.json');
@@ -138,6 +287,106 @@ function buildLeaderboard(
     }));
 }
 
+app.post('/api/login', (req: Request, res: Response<LoginResponse | { message: string; status: string }>) => {
+  const loginBody = (req.body ?? {}) as LoginRequest;
+  const username = (loginBody.username ?? loginBody.email ?? '').trim();
+  const password = loginBody.password ?? '';
+  const identifier = getLoginIdentifier(req, username || 'unknown');
+  const now = Date.now();
+
+  if (isRateLimited(identifier, now)) {
+    logWarning('auth.rate_limit_exceeded', {
+      ip: getClientIp(req),
+      username: username || null,
+      failedAttempts: loginRateLimit.maxFailedAttempts,
+      windowMs: loginRateLimit.windowMs
+    });
+
+    res.status(429).json({
+      message: 'Too many failed login attempts. Try again later.',
+      status: 'error'
+    });
+    return;
+  }
+
+  if (username !== demoUser.email || password !== demoUser.password) {
+    const failedAttempts = recordFailedLogin(identifier, now);
+
+    logWarning('auth.login_failed', {
+      ip: getClientIp(req),
+      username: username || null,
+      failedAttempts,
+      remainingAttempts: Math.max(loginRateLimit.maxFailedAttempts - failedAttempts, 0)
+    });
+
+    if (failedAttempts >= loginRateLimit.maxFailedAttempts) {
+      logWarning('auth.suspicious_login_activity', {
+        ip: getClientIp(req),
+        username: username || null,
+        failedAttempts,
+        windowMs: loginRateLimit.windowMs
+      });
+    }
+
+    res.status(401).json({
+      message: 'Invalid username or password',
+      status: 'error'
+    });
+    return;
+  }
+
+  clearFailedLogins(identifier);
+
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiresAt = now + sessionDurationMs;
+  const user: AuthUser = {
+    email: demoUser.email,
+    name: demoUser.name,
+    role: demoUser.role
+  };
+
+  sessions.set(token, {
+    user,
+    expiresAt
+  });
+
+  logInfo('auth.login_success', {
+    ip: getClientIp(req),
+    username,
+    expiresAt: new Date(expiresAt).toISOString()
+  });
+
+  res.json({
+    token,
+    expiresAt: new Date(expiresAt).toISOString(),
+    user
+  });
+});
+
+app.post('/api/logout', authenticate, (req: AuthenticatedRequest, res: Response) => {
+  const token = getBearerToken(req);
+
+  if (token) {
+    sessions.delete(token);
+  }
+
+  logInfo('auth.logout_success', {
+    ip: getClientIp(req),
+    username: req.user?.email ?? null
+  });
+
+  res.json({
+    message: 'Logged out',
+    status: 'ok'
+  });
+});
+
+app.get('/api/me', authenticate, (req: AuthenticatedRequest, res: Response) => {
+  res.json({
+    user: req.user
+  });
+});
+
 // Data endpoint
 app.get('/api/hello', (req, res) => {
   try {
@@ -157,7 +406,9 @@ app.get('/api/hello', (req, res) => {
       dataRows
     });
   } catch (error) {
-    console.error('Error reading data:', error);
+    logError('api.hello_failed', error, {
+      path: req.path
+    });
     res.status(500).json({
       message: 'Error reading data',
       status: 'error',
@@ -166,7 +417,7 @@ app.get('/api/hello', (req, res) => {
   }
 });
 
-app.get('/api/leaderboard', (req, res) => {
+app.get('/api/leaderboard', authenticate, (req: AuthenticatedRequest, res) => {
   try {
     const sortBy = getSortBy(req.query.sortBy);
     const limit = getLimit(req.query.limit);
@@ -182,7 +433,10 @@ app.get('/api/leaderboard', (req, res) => {
 
     res.json(response);
   } catch (error) {
-    console.error('Error building leaderboard:', error);
+    logError('api.leaderboard_failed', error, {
+      path: req.path,
+      username: req.user?.email ?? null
+    });
     res.status(500).json({
       message: 'Error building leaderboard',
       status: 'error',

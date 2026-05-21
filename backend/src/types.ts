@@ -38,6 +38,24 @@ export interface SalespersonLeaderboardResponse {
   data: SalespersonLeaderboardItem[];
 }
 
+export interface LoginRequest {
+  username?: string;
+  email?: string;
+  password?: string;
+}
+
+export interface AuthUser {
+  email: string;
+  name: string;
+  role: "manager";
+}
+
+export interface LoginResponse {
+  token: string;
+  expiresAt: string;
+  user: AuthUser;
+}
+
 export interface BusinessCase {
   id: number;
   _permission: number;

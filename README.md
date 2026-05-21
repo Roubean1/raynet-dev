@@ -53,3 +53,7 @@ npm run dev:frontend
 | Endpoint | Metoda | Popis |
 |----------|--------|-------|
 | `/api/hello` | GET | Test endpoint |
+
+## Testovací uživatel
+Email: manager@raynet.cz
+Heslo: Raynet
