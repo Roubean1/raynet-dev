@@ -56,6 +56,65 @@ export interface LoginResponse {
   user: AuthUser;
 }
 
+export interface SellerRanking {
+  id: number;
+  name: string;
+  email: string | null;
+  casesCount: number;
+  totalAmount: number;
+  weightedAmount: number;
+  averageProbability: number;
+  winCount: number;
+  activeCount: number;
+  lostCount: number;
+}
+
+export interface DealStat {
+  name: string;
+  count: number;
+  totalAmount: number;
+  weightedAmount: number;
+  averageProbability: number;
+}
+
+export interface DealSummary {
+  id: number;
+  name: string;
+  code: string;
+  companyName: string;
+  ownerName: string;
+  region: string;
+  source: string;
+  phase: string;
+  status: "B_ACTIVE" | "E_WIN" | "F_LOST";
+  probability: number;
+  totalAmount: number;
+  weightedAmount: number;
+  scheduledEnd: string | null;
+  nextActivity: string | null;
+  currency: string;
+  companyLogoFileName: string | null;
+  ownerPhotoFileName: string | null;
+}
+
+export interface DealAnalytics {
+  totalDeals: number;
+  activeDeals: number;
+  wonDeals: number;
+  lostDeals: number;
+  totalPipeline: number;
+  weightedPipeline: number;
+  averageProbability: number;
+  withoutNextActivity: number;
+  overdueScheduledEnd: number;
+  highValueLowProbability: number;
+  phaseStats: DealStat[];
+  regionStats: DealStat[];
+  sourceStats: DealStat[];
+  topDeals: DealSummary[];
+  riskyDeals: DealSummary[];
+}
+
 export interface BusinessCase {
   id: number;
   _permission: number;

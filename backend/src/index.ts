@@ -8,9 +8,13 @@ import {
   AuthUser,
   BusinessCase,
   BusinessCaseResponse,
+  DealAnalytics,
+  DealStat,
+  DealSummary,
   LeaderboardSortBy,
   LoginRequest,
   LoginResponse,
+  SellerRanking,
   SalespersonLeaderboardItem,
   SalespersonLeaderboardResponse
 } from './types';
@@ -287,6 +291,70 @@ function buildLeaderboard(
     }));
 }
 
+function getStatName(value: string | null | undefined, fallback: string): string {
+  return value?.trim() || fallback;
+}
+
+function mapDealSummary(businessCase: BusinessCase): DealSummary {
+  const totalAmount = toNumber(businessCase.totalAmountInDefaultCurrency);
+  const probability = toNumber(businessCase.probability);
+
+  return {
+    id: businessCase.id,
+    name: businessCase.name,
+    code: businessCase.code,
+    companyName: businessCase.company.name,
+    ownerName: businessCase.owner.fullNameWithoutTitles || businessCase.owner.fullName,
+    region: getStatName(businessCase.company.primaryAddress.territory?.code01, 'Bez regionu'),
+    source: getStatName(businessCase.source?.code01, 'Bez zdroje'),
+    phase: getStatName(businessCase.businessCasePhase.code01, 'Bez fáze'),
+    status: businessCase.status,
+    probability,
+    totalAmount,
+    weightedAmount: totalAmount * (probability / 100),
+    scheduledEnd: businessCase.scheduledEnd,
+    nextActivity: businessCase.nextActivity,
+    currency: businessCase.currency.code02,
+    companyLogoFileName: businessCase.company.logo?.fileName ?? null,
+    ownerPhotoFileName: businessCase.owner.photo?.fileName ?? null
+  };
+}
+
+function buildGroupedStats(
+  businessCases: BusinessCase[],
+  getName: (businessCase: BusinessCase) => string
+): DealStat[] {
+  const groups = new Map<string, { count: number; totalAmount: number; weightedAmount: number; probabilitySum: number }>();
+
+  for (const businessCase of businessCases) {
+    const name = getName(businessCase);
+    const totalAmount = toNumber(businessCase.totalAmountInDefaultCurrency);
+    const probability = toNumber(businessCase.probability);
+    const current = groups.get(name) ?? {
+      count: 0,
+      totalAmount: 0,
+      weightedAmount: 0,
+      probabilitySum: 0
+    };
+
+    current.count += 1;
+    current.totalAmount += totalAmount;
+    current.weightedAmount += totalAmount * (probability / 100);
+    current.probabilitySum += probability;
+    groups.set(name, current);
+  }
+
+  return Array.from(groups.entries())
+    .map(([name, group]) => ({
+      name,
+      count: group.count,
+      totalAmount: Math.round(group.totalAmount),
+      weightedAmount: Math.round(group.weightedAmount),
+      averageProbability: group.count > 0 ? Math.round(group.probabilitySum / group.count) : 0
+    }))
+    .sort((a, b) => b.weightedAmount - a.weightedAmount);
+}
+
 app.post('/api/login', (req: Request, res: Response<LoginResponse | { message: string; status: string }>) => {
   const loginBody = (req.body ?? {}) as LoginRequest;
   const username = (loginBody.username ?? loginBody.email ?? '').trim();
@@ -391,6 +459,10 @@ app.get('/api/me', authenticate, (req: AuthenticatedRequest, res: Response) => {
 app.get('/api/hello', (req, res) => {
   try {
     const businessCases = loadBusinessCases();
+    const jsonData: BusinessCaseResponse = {
+      totalCount: businessCases.length,
+      data: businessCases
+    };
 
     const dataRows = businessCases.slice(0, 10).map((item) => ({
       id: item.id,
