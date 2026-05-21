@@ -3,6 +3,41 @@ export interface BusinessCaseResponse {
   data: BusinessCase[];
 }
 
+export type LeaderboardSortBy =
+  | "wonRevenue"
+  | "totalRevenue"
+  | "activeRevenue"
+  | "weightedRevenue"
+  | "tradingProfit"
+  | "businessCasesCount"
+  | "wonCasesCount"
+  | "winRate";
+
+export interface SalespersonLeaderboardItem {
+  rank: number;
+  ownerId: number;
+  ownerName: string;
+  ownerEmail: string | null;
+  businessCasesCount: number;
+  wonCasesCount: number;
+  activeCasesCount: number;
+  lostCasesCount: number;
+  totalRevenue: number;
+  wonRevenue: number;
+  activeRevenue: number;
+  weightedRevenue: number;
+  tradingProfit: number;
+  averageDealSize: number;
+  winRate: number;
+}
+
+export interface SalespersonLeaderboardResponse {
+  generatedAt: string;
+  totalSalespeople: number;
+  sortBy: LeaderboardSortBy;
+  data: SalespersonLeaderboardItem[];
+}
+
 export interface BusinessCase {
   id: number;
   _permission: number;
